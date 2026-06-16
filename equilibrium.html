@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>화학 평형 시뮬레이션</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root { --no2: #e74c3c; --n2o4: #3498db; --dark: #2c3e50; }
+        body { 
+            background-color: #f1f3f5; margin: 0; padding: 0; 
+            display: flex; justify-content: center; align-items: center; 
+            height: 100vh; overflow: hidden; font-family: 'Malgun Gothic', sans-serif;
+        }
+        /* 메인 컨테이너 - 높이를 유동적으로 조정하여 패드 대응 */
+        .app-box { 
+            background: white; border-radius: 20px; padding: 30px; 
+            display: flex; gap: 30px; box-shadow: 0 10px 40px rgba(0,0,0,0.12);
+            width: 1050px; height: 92vh; max-height: 700px; 
+            align-items: center; box-sizing: border-box; position: relative;
+        }
+        
+        .left-panel { flex: 0.9; display: flex; flex-direction: column; align-items: center; gap: 15px; }
+        .p-box { background: var(--dark); color: #00ffcc; width: 100%; border-radius: 12px; padding: 12px; text-align: center; }
+        .p-num { font-size: 32px; font-weight: bold; font-family: monospace; }
+        .vessel { 
+            width: 230px; height: 380px; background: white; border: 5px solid #ced4da; 
+            border-radius: 10px 10px 30px 30px; overflow: hidden; position: relative;
+        }
+        #pCanvas { width: 100%; height: 100%; }
+
+        .right-panel { flex: 1.6; display: flex; flex-direction: column; gap: 15px; height: 100%; box-sizing: border-box; }
+        .controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+        .btn { border: none; padding: 13px; font-size: 14px; font-weight: bold; color: white; border-radius: 8px; cursor: pointer; transition: 0.2s; }
+        .btn:active { transform: scale(0.96); }
+        .btn-r { background: var(--no2); } 
+        .btn-b { background: var(--n2o4); }
+        .btn-g { background: #7f8c8d; } 
+        .btn-o { background: #f39c12; }
+        .btn-navy { background: var(--dark); }
+        .btn-wide { grid-column: span 3; }
+        .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+        .stat-bar { display: flex; justify-content: space-around; background: #f8f9fa; border-radius: 12px; padding: 10px 15px; font-weight: bold; font-size: 18px; border: 1.5px solid #eee; }
+        .chart-wrap { 
+            flex: 1; background: white; border: 1.5px solid #eee; 
+            border-radius: 12px; padding: 15px 15px 5px 10px; 
+            position: relative; overflow: hidden; min-height: 0;
+        }
+
+        /* 모달 스타일 */
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 1000; justify-content: center; align-items: center; }
+        .modal-inner { background: white; width: 950px; height: 600px; border-radius: 20px; padding: 30px; position: relative; }
+        .m-close { position: absolute; top: 15px; right: 25px; font-size: 40px; cursor: pointer; color: #333; }
+        .compare-grid { display: flex; justify-content: center; gap: 60px; text-align: center; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div class="app-box">
+    <div class="left-panel">
+        <div class="p-box">
+            <div style="font-size:10px; opacity:0.8; color:white; margin-bottom:2px;">용기 내부 압력 (atm)</div>
+            <div class="p-num" id="presDisp">0.00</div>
+        </div>
+        <div class="vessel"><canvas id="pCanvas"></canvas></div>
+        <div style="font-size:13px; font-weight:bold; color:#555;">● NO₂ (적갈색) | ○ N₂O₄ (무색)</div>
+    </div>
+
+    <div class="right-panel">
+        <div class="controls">
+            <button class="btn btn-r" id="injNO2" onclick="inject('NO2')">NO₂ 투입</button>
+            <button class="btn btn-b" id="injN2O4" onclick="inject('N2O4')">N₂O₄ 투입</button>
+            <button class="btn btn-g" onclick="resetSim()">초기화</button>
+            
+            <button class="btn btn-o btn-wide" id="btnPause" onclick="toggleSim()" style="display:none;">실험 종료 (일시정지)</button>
+            <button class="btn btn-navy" id="btnComp" onclick="showComparison()" style="display:none; grid-column: span 1.5;">색깔 변화 관찰</button>
+            <button class="btn btn-navy" id="btnRes" onclick="showResult()" style="display:none; grid-column: span 1.5;">최종 그래프 보기</button>
+        </div>
+        <div class="stat-bar">
+            <span style="color:var(--no2)">NO₂: <span id="c1">0</span></span>
+            <span style="color:var(--n2o4)">N₂O₄: <span id="c2">0</span></span>
+        </div>
+        <div class="chart-wrap">
+            <canvas id="liveChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<div id="modal" class="modal">
+    <div class="modal-inner">
+        <div class="m-close" onclick="closeModal()">&times;</div>
+        <div id="modalContent" style="height:100%; display:flex; flex-direction:column; justify-content:center;"></div>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('pCanvas'), ctx = canvas.getContext('2d');
+    canvas.width = 230; canvas.height = 380;
+
+    let particles = [], isRunning = false, currentTime = 0, aniId, dataId;
+    let startSnap = null; 
+    let log = { t: [], n1: [], n2: [] };
+    
+    let sNO2 = 0, sN2O4 = 0;
+    const TARGET_TIME = 15;
+    const SMOOTHING = 0.96; 
+
+    class Particle {
+        constructor(t, x, y) {
+            this.t = t; this.r = t === 'NO2' ? 6 : 9.5;
+            this.x = x || Math.random()*(canvas.width-30)+15;
+            this.y = y || Math.random()*(canvas.height-30)+15;
+            this.vx = (Math.random()-0.5)*5.5; this.vy = (Math.random()-0.5)*5.5;
+        }
+        draw(targetCtx = ctx) {
+            targetCtx.beginPath(); targetCtx.arc(this.x, this.y, this.r, 0, Math.PI*2);
+            targetCtx.fillStyle = this.t === 'NO2' ? '#e74c3c' : '#ffffff';
+            targetCtx.strokeStyle = this.t === 'NO2' ? '#900' : '#bdc3c7';
+            targetCtx.lineWidth = 1.5; targetCtx.fill(); targetCtx.stroke();
+        }
+        move() {
+            this.x += this.vx; this.y += this.vy;
+            if (this.x < this.r || this.x > canvas.width - this.r) this.vx *= -1;
+            if (this.y < this.r || this.y > canvas.height - this.r) this.vy *= -1;
+        }
+    }
+
+    function inject(type) {
+        resetSim(); 
+        isRunning = true;
+        document.getElementById('injNO2').disabled = true;
+        document.getElementById('injN2O4').disabled = true;
+        document.getElementById('btnPause').style.display = 'block';
+
+        if(type === 'NO2'){
+            for(let i=0; i<120; i++) particles.push(new Particle('NO2'));
+            sNO2 = 120; sN2O4 = 0;
+        } else {
+            for(let i=0; i<60; i++) particles.push(new Particle('N2O4'));
+            sNO2 = 0; sN2O4 = 60;
+        }
+        
+        // 투입 즉시 스냅샷 촬영
+        ctx.clearRect(0,0,230,380);
+        let n1_start = particles.filter(p=>p.t==='NO2').length;
+        ctx.fillStyle = `rgba(139, 69, 19, ${Math.min(0.6, n1_start * 0.012)})`;
+        ctx.fillRect(0,0,230,380);
+        particles.forEach(p=>p.draw());
+        startSnap = canvas.toDataURL();
+
+        loop();
+        dataId = setInterval(record, 100);
+    }
+
+    function toggleSim() {
+        if(isRunning) {
+            isRunning = false;
+            document.getElementById('btnPause').innerText = "실험 재개";
+            document.getElementById('btnComp').style.display = 'block';
+            document.getElementById('btnRes').style.display = 'block';
+        } else {
+            isRunning = true;
+            document.getElementById('btnPause').innerText = "실험 종료 (일시정지)";
+            loop();
+        }
+    }
+
+    function resetSim() {
+        isRunning = false; particles = []; log = { t: [], n1: [], n2: [] };
+        currentTime = 0; startSnap = null;
+        clearInterval(dataId); cancelAnimationFrame(aniId);
+        document.getElementById('injNO2').disabled = false;
+        document.getElementById('injN2O4').disabled = false;
+        document.getElementById('presDisp').innerText = "0.00";
+        document.querySelectorAll('.controls button').forEach(b => { if(!b.id.includes('inj') && !b.innerText.includes('초기화')) b.style.display='none'; });
+        ctx.clearRect(0,0,230,380);
+        liveChart.data.labels = []; liveChart.data.datasets.forEach(d=>d.data=[]); liveChart.update();
+    }
+
+    function loop() {
+        if(!isRunning) return;
+        ctx.clearRect(0,0,230,380);
+        let n1 = particles.filter(p=>p.t === 'NO2').length;
+        ctx.fillStyle = `rgba(139, 69, 19, ${Math.min(0.6, n1 * 0.012)})`;
+        ctx.fillRect(0,0,230,380);
+        particles.forEach(p=>{ p.move(); p.draw(); });
+
+        let n2 = particles.filter(p=>p.t === 'N2O4').length;
+        if(n1 > 2 && Math.random() < 0.006 * n1) {
+            let p1 = particles.find(p=>p.t==='NO2'), p2 = particles.find(p=>p.t==='NO2' && p!==p1);
+            if(p2) { particles = particles.filter(p => p !== p1 && p !== p2); particles.push(new Particle('N2O4', p1.x, p1.y)); }
+        }
+        if(n2 > 0 && Math.random() < 0.12) {
+            let p = particles.find(p=>p.t==='N2O4');
+            particles = particles.filter(it => it !== p); particles.push(new Particle('NO2', p.x-5, p.y)); particles.push(new Particle('NO2', p.x+5, p.y));
+        }
+
+        document.getElementById('presDisp').innerText = ((n1+n2)*0.015).toFixed(2);
+        document.getElementById('c1').innerText = n1;
+        document.getElementById('c2').innerText = n2;
+        aniId = requestAnimationFrame(loop);
+    }
+
+    function record() {
+        if(!isRunning) return;
+        currentTime += 0.1;
+        let n1 = particles.filter(p=>p.t==='NO2').length, n2 = particles.filter(p=>p.t==='N2O4').length;
+        let alpha = (currentTime > (TARGET_TIME - 1)) ? 0.999 : SMOOTHING;
+        sNO2 = sNO2 * alpha + n1 * (1 - alpha); sN2O4 = sN2O4 * alpha + n2 * (1 - alpha);
+
+        if(currentTime >= TARGET_TIME) { sNO2 = parseFloat(log.n1[log.n1.length - 1]); sN2O4 = parseFloat(log.n2[log.n2.length - 1]); }
+
+        liveChart.data.labels.push("");
+        liveChart.data.datasets[0].data.push(sNO2.toFixed(1)); liveChart.data.datasets[1].data.push(sN2O4.toFixed(1));
+        if(liveChart.data.labels.length > 200) { liveChart.data.labels.shift(); liveChart.data.datasets.forEach(d=>d.data.shift()); }
+        liveChart.update('none');
+
+        log.t.push(currentTime.toFixed(1) + "s"); log.n1.push(sNO2.toFixed(1)); log.n2.push(sN2O4.toFixed(1));
+    }
+
+    const liveChart = new Chart(document.getElementById('liveChart'), {
+        type: 'line', data: { labels:[], datasets: [{ label:'NO₂', data:[], borderColor:'#e74c3c', borderWidth:4, pointRadius:0, tension:0.2 }, { label:'N₂O₄', data:[], borderColor:'#3498db', borderWidth:4, pointRadius:0, tension:0.2 }]}, 
+        options: { responsive:true, maintainAspectRatio:false, layout:{padding:{bottom:5}}, scales:{ x:{display:false}, y:{beginAtZero:true, max:130, ticks:{font:{size:10}}} }, plugins:{ legend:{display:false} } }
+    });
+
+    function showComparison() {
+        document.getElementById('modal').style.display='flex';
+        document.getElementById('modalContent').innerHTML = `
+            <div style="font-size:22px; font-weight:bold; margin-bottom:20px; text-align:center;">입자 구성 및 색깔 변화 비교</div>
+            <div class="compare-grid">
+                <div><div class="vessel" style="width:160px;height:280px; margin:auto;"><img src="${startSnap}" width="100%"></div><p>실험 초기 (반응 전)</p></div>
+                <div style="font-size:30px; align-self:center;">▶</div>
+                <div><div class="vessel" style="width:160px;height:280px; margin:auto;"><img src="${canvas.toDataURL()}" width="100%"></div><p>평형 상태 (반응 후)</p></div>
+            </div>`;
+    }
+
+    function showResult() {
+        document.getElementById('modal').style.display='flex';
+        document.getElementById('modalContent').innerHTML = `<h3 style="margin:0 0 15px 0; text-align:center;">실험 최종 그래프</h3><div style="height:440px"><canvas id="fChart"></canvas></div>`;
+        new Chart(document.getElementById('fChart'), {
+            type:'line', data:{ labels:log.t, datasets:[{ label:'NO₂ 농도', data:log.n1, borderColor:'#e74c3c', borderWidth:5, pointRadius:0, tension:0.1 }, { label:'N₂O₄ 농도', data:log.n2, borderColor:'#3498db', borderWidth:5, pointRadius:0, tension:0.1 }]}, 
+            options:{ responsive:true, maintainAspectRatio:false, scales:{ y:{ beginAtZero:true, max:130, title:{display:true, text:'농도'} }, x:{ ticks:{ autoSkip:true, maxTicksLimit:10 } } }, plugins:{ legend:{position:'top'} } }
+        });
+    }
+
+    function closeModal() { document.getElementById('modal').style.display='none'; }
+</script>
+</body>
+</html>
